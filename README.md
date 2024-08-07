@@ -1,48 +1,38 @@
-# Need to install:
+# Athena: Remote Actions Preview
 
-- poetry
-- jq
+## Preview Packages:
 
-# install
-
-```
-poetry install
-```
-
-# configure (optional)
-
-```
-poetry config virtualenvs.in-project true
+```jsx
+@copilotkit/react-core@1.1.1-feat-runtime-remote-actions.0
+@copilotkit/react-textarea@1.1.1-feat-runtime-remote-actions.0
+@copilotkit/react-ui@1.1.1-feat-runtime-remote-actions.0
+@copilotkit/runtime@1.1.1-feat-runtime-remote-actions.0
+@copilotkit/runtime-client-gql@1.1.1-feat-runtime-remote-actions.0
+@copilotkit/shared@1.1.1-feat-runtime-remote-actions.0
 ```
 
-# run
+## How to run the demo
 
-```
-poetry run uvicorn coagents.demo:app --reload
-```
+Check out this branch of CopilotKit:
 
-# list
+https://github.com/CopilotKit/CopilotKit/tree/feat/runtime-remote-actions
 
-```
-curl -X POST http://localhost:8000/copilotkit/actions/list \
--H "Content-Type: application/json" \
--d '{"properties": {}}' | jq
-```
+Check out this branch of the python SDK
 
-# execute action
+https://github.com/mme/coagents/tree/athena-preview
 
-```
-curl -X POST http://localhost:8000/copilotkit/actions/execute -H "Content-Type: application/json" -d '{"name": "greet", "parameters": {"name": "Markus"}}' | jq
-```
-
-# execute agent
-
-```
-curl -X POST http://localhost:8000/copilotkit/actions/execute -H "Content-Type: application/json" -d '{"name": "askUser", "parameters": {}}' | jq
-```
-
-# continue executing agent (!! replace threadId with the one from the previous response)
-
-```
-curl -X POST http://localhost:8000/copilotkit/actions/execute -H "Content-Type: application/json" -d '{"name": "askUser", "threadId": "ac75afdf-74bf-42f7-bf26-c50b69d31835", "state": {"name":"","copilot":{"ask":{"question":"What is your name?","answer":"Markus"}}}}' | jq
-```
+1. In CopilotKit
+   1. `turbo run dev`
+   2. `cd examples/next-openai && pnpm example-dev`
+2. In the python SDK
+   1. `poetry install`
+   2. `poetry run demo`
+3. Go to http://localhost:3000/presentation
+4. Ask “What is the weather in Vienna?”
+5. Answer comes from Python (Cloudy with a chance of hail)
+6. Relevant code:
+   1. https://github.com/mme/coagents/blob/43c73377f01c25e332f187fb88013d7c36d0daff/coagents/demo.py#L16
+      1. This is where the remote functions are set up `CopilotKitSDK`
+      2. Add the endpoint to FastAPI `add_fastapi_endpoint(app, sdk, "/copilotkit")`
+   2. https://github.com/CopilotKit/CopilotKit/blob/00be2037ed24e8cdf5d3b0a879a774bcacd13d50/CopilotKit/examples/next-openai/src/app/api/copilotkit/route.ts#L45
+      1. Remote actions url is defined here: `remoteActions: [{ url: "http://localhost:8000/copilotkit" }],`
