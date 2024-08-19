@@ -2,9 +2,17 @@
 
 from typing import Optional, List
 from abc import ABC, abstractmethod
+import uuid
 from langgraph.graph.graph import CompiledGraph
 from langchain.load.dump import dumps as langchain_dumps
+from langchain.load.load import load as langchain_load
+
+from langchain.schema import SystemMessage
 from .parameter import BaseParameter, normalize_parameters
+from .types import Message
+from .langchain import copilotkit_messages_to_langchain
+
+
 
 class Agent(ABC):
     """Agent class for CopilotKit"""
@@ -14,32 +22,23 @@ class Agent(ABC):
             name: str,
             description: Optional[str] = None,
             parameters: Optional[List[BaseParameter]] = None,
+            merge_state: Optional[callable] = None
         ):
         self.name = name
         self.description = description
         self.parameters = parameters
-
-    # TODO: agents always get the full message history
-
-    @abstractmethod
-    async def start_execution(
-        self,
-        *,
-        thread_id: str,
-        parameters: dict,
-        properties: dict
-    ):
-        """Start the execution of the agent"""
+        self.merge_state = merge_state
 
     @abstractmethod
-    async def continue_execution(
+    def execute(
         self,
         *,
-        thread_id: str,
         state: dict,
-        properties: dict
+        messages: List[Message],
+        thread_id: Optional[str] = None,
+        node_name: Optional[str] = None,
     ):
-        """Continue the execution of the agent"""
+        """Execute the agent"""
 
     def dict_repr(self):
         """Dict representation of the action"""
@@ -49,6 +48,32 @@ class Agent(ABC):
             'parameters': normalize_parameters(self.parameters),
         }
 
+def langgraph_default_merge_state( # pylint: disable=unused-argument
+        *,
+        state: dict,
+        messages: List[Message],
+        actions: List[any]
+    ):
+    """Default merge state for LangGraph"""
+    if len(messages) > 0 and isinstance(messages[0], SystemMessage):
+        # remove system message
+        messages = messages[1:]
+
+    # merge with existing messages
+    merged_messages = list(map(langchain_load, state.get("messages", [])))
+    existing_message_ids = {message.id for message in merged_messages}
+
+    for message in messages:
+        if message.id not in existing_message_ids:
+            merged_messages.append(message)
+
+    return {
+        **state,
+        "messages": merged_messages,
+        "copilotkit": {
+            "actions": actions
+        }
+    }
 
 class LangGraphAgent(Agent):
     """LangGraph agent class for CopilotKit"""
@@ -58,40 +83,85 @@ class LangGraphAgent(Agent):
             name: str,
             agent: CompiledGraph,
             description: Optional[str] = None,
-            parameters: Optional[List[BaseParameter]] = None
+            parameters: Optional[List[BaseParameter]] = None,
+            merge_state: Optional[callable] = langgraph_default_merge_state
         ):
-        super().__init__(name=name, description=description, parameters=parameters)
+        super().__init__(
+            name=name,
+            description=description,
+            parameters=parameters,
+            merge_state=merge_state
+        )
         self.agent = agent
 
-    async def start_execution(
-        self,
-        *,
-        thread_id: str,
-        parameters: dict,
-        properties: dict
-    ):
-        config = {"configurable": {"thread_id": thread_id}}
-        parameters = {**parameters, **{"test_property_xxx": "_____________________"}}
-        async for event in self.agent.astream_events(parameters, config, version="v1"):            
-            yield langchain_dumps({"langgraph": event}) + "\n"
+    def _state_sync_event(self, thread_id: str, node_name: str, state: dict, running: bool):
+        return langchain_dumps({
+            "event": "on_copilotkit_state_sync",
+            "thread_id": thread_id,
+            "agent_name": self.name,
+            "node_name": node_name,
+            "state": state,
+            "running": running,
+            "role": "assistant"
+        })
 
-    async def continue_execution(
+    def execute( # pylint: disable=too-many-arguments
         self,
         *,
-        thread_id: str,
         state: dict,
-        properties: dict
+        messages: List[Message],
+        thread_id: Optional[str] = None,
+        node_name: Optional[str] = None,
+        actions: Optional[List[any]] = None,
     ):
+        langchain_messages = copilotkit_messages_to_langchain(messages)
+        state = self.merge_state(
+            state=state,
+            messages=langchain_messages,
+            actions=actions
+        )
+
+        mode = "continue" if thread_id and node_name else "start"
+        thread_id = thread_id or str(uuid.uuid4())
+
         config = {"configurable": {"thread_id": thread_id}}
+        if mode == "continue":
+            self.agent.update_state(config, state, as_node=node_name)
 
-        node_name = properties.get("node_name")
-        if node_name is None:
-            raise ValueError("Node name is required")
+        return self._stream_events(
+            mode=mode,
+            thread_id=thread_id,
+            state=state,
+            node_name=node_name
+        )
 
-        self.agent.update_state(config, state, as_node=node_name)
+    async def _stream_events(self, *, mode: str, thread_id: str, state: dict, node_name: str):
 
-        for event in self.agent.astream_events(None, config, version="v1"):
-            yield langchain_dumps({"langgraph": event}) + "\n"
+        config = {"configurable": {"thread_id": thread_id}}
+        yield self._state_sync_event(thread_id, node_name or "__start__", state, True) + "\n"
+
+        initial_state = state if mode == "start" else None
+        async for event in self.agent.astream_events(initial_state, config, version="v1"):
+            node_name = event.get("name")
+            event_type = event.get("event")
+            tags = event.get("tags", [])
+            if "copilotkit:hidden" in tags:
+                continue
+            if not((event_type == "on_chain_start" and node_name == "LangGraph") or
+                node_name == "__start__"):
+                updated_state = self.agent.get_state(config).values
+                if updated_state != state:
+                    state = updated_state
+                    yield self._state_sync_event(thread_id, node_name, state, True) + "\n"
+            yield langchain_dumps(event) + "\n"
+
+        state = self.agent.get_state(config)
+        running = state.next != ()
+
+        node_name = list(state.metadata["writes"].keys())[0]
+        yield self._state_sync_event(thread_id, node_name, state.values, running) + "\n"
+
+
 
     def dict_repr(self):
         super_repr = super().dict_repr()

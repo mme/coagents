@@ -29,4 +29,3 @@ class AgentExecutionException(Exception):
         self.name = name
         self.error = error
         super().__init__(f"Agent '{name}' failed to execute: {error}")
-  

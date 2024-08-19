@@ -3,6 +3,7 @@
 from typing import List, Callable, Union, Optional, TypedDict, Any
 from .agent import Agent
 from .action import Action
+from .types import Message
 from .exc import (
     ActionNotFoundException,
     AgentNotFoundException,
@@ -41,7 +42,6 @@ class CopilotKitSDK:
             "actions": [action.dict_repr() for action in actions],
             "agents": [agent.dict_repr() for agent in agents]
         }
-        print(result)
         return result
     
     def _get_action(
@@ -62,68 +62,41 @@ class CopilotKitSDK:
             *,
             context: CopilotKitSDKContext,
             name: str,
-            parameters: dict,
+            arguments: dict,
     ) -> dict:
         """Execute an action"""
 
         action = self._get_action(context=context, name=name)
 
         try:
-            return action.execute(parameters=parameters)
+            return action.execute(arguments=arguments)
         except Exception as error:
             raise ActionExecutionException(name, error) from error
 
-    def _get_agent(
+    def execute_agent( # pylint: disable=too-many-arguments
         self,
         *,
         context: CopilotKitSDKContext,
         name: str,
-    ) -> Agent:
-        """Get an agent by name"""
+        thread_id: str,
+        node_name: str,
+        state: dict,
+        messages: List[Message],
+        actions: List[any],
+    ):
+        """Execute an agent"""
         agents = self.agents(context) if callable(self.agents) else self.agents
         agent = next((agent for agent in agents if agent.name == name), None)
         if agent is None:
             raise AgentNotFoundException(name)
-        return agent
-
-    def start_agent_execution( # pylint: disable=too-many-arguments
-        self,
-        *,
-        context: CopilotKitSDKContext,
-        name: str,
-        thread_id: str,
-        parameters: dict,
-        properties: dict,
-    ):
-        """Start an agent execution"""
-        agent = self._get_agent(context=context, name=name)
 
         try:
-            return agent.start_execution(
+            return agent.execute(
                 thread_id=thread_id,
-                parameters=parameters,
-                properties=properties,
-            )
-        except Exception as error:
-            raise AgentExecutionException(name, error) from error
-
-    def continue_agent_execution( # pylint: disable=too-many-arguments
-        self,
-        *,
-        context: CopilotKitSDKContext,
-        name: str,
-        thread_id: str,
-        state: dict,
-        properties: dict,
-    ):
-        """Continue an agent execution"""
-        agent = self._get_agent(context=context, name=name)
-
-        try:
-            return agent.continue_execution(
-                thread_id=thread_id,
+                node_name=node_name,
                 state=state,
-                properties=properties,
+                messages=messages,
+                actions=actions,
             )
         except Exception as error:
             raise AgentExecutionException(name, error) from error
